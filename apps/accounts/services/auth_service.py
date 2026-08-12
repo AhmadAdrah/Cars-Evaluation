@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate
 from django.db import transaction
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 
 from ..models import User
 from ..selectors.user_selector import get_user_by_email
@@ -38,21 +39,21 @@ def activate_user_account(*, email: str) -> User:
 def authenticate_user(*, email: str, password: str):
     user = authenticate(request=None, username=email, password=password)
     if user is None:
-        raise ValueError('Invalid credentials.')
+        raise AuthenticationFailed('Invalid credentials.')
     return user
 
 
 def authenticate_admin(*, email: str, password: str):
     user = authenticate_user(email=email, password=password)
     if user.role != User.Role.ADMIN:
-        raise ValueError('Admin access required.')
+        raise PermissionDenied('Admin access required.')
     return user
 
 
 def authenticate_client(*, email: str, password: str):
     user = authenticate_user(email=email, password=password)
     if user.role != User.Role.USER:
-        raise ValueError('Client access required.')
+        raise PermissionDenied('Client access required.')
     return user
 
 
