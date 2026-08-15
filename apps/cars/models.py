@@ -19,8 +19,9 @@ class Car(models.Model):
         ACCIDENT_REPORTED = 'Accident Reported', 'Accident Reported'
 
     class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
         AVAILABLE = 'AVAILABLE', 'Available'
-        # PENDING = 'PENDING', 'Pending'
+        REJECTED = 'REJECTED', 'Rejected'
         SOLD = 'SOLD', 'Sold'
 
     seller = models.ForeignKey(
@@ -44,7 +45,7 @@ class Car(models.Model):
         max_digits=12, decimal_places=2, null=True, blank=True,
         help_text='Predicted price computed by the evaluation model',
     )
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.AVAILABLE)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
