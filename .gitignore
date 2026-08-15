@@ -124,3 +124,6 @@ prof/
 
 Cars.postman_collection.json
 db.sqlite3
+
+__pycache__
+*.pyc
