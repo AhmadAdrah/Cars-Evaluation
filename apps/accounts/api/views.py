@@ -1,4 +1,4 @@
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,10 +14,12 @@ from ..services.auth_service import (
 )
 from ..services.otp_service import check_otp_code, generate_and_send_email_otp, verify_otp_code
 from .serializers import (
+    ChangePasswordSerializer,
     EmailVerifyOTPSerializer,
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
     UserLoginSerializer,
+    UserProfileSerializer,
     UserRegisterSerializer,
     VerifyPasswordOTPSerializer,
 )
@@ -130,3 +132,44 @@ class ResetPasswordAPIView(APIView):
 
         reset_user_password(**serializer.validated_data)
         return Response({'detail': 'Password reset successfully.'}, status=status.HTTP_200_OK)
+
+
+class ProfileAPIView(APIView):
+    """Authenticated user: retrieve or update own profile."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response(UserProfileSerializer(request.user).data, status=status.HTTP_200_OK)
+
+    def put(self, request, *args, **kwargs):
+        return self._update(request, partial=False)
+
+    def patch(self, request, *args, **kwargs):
+        return self._update(request, partial=True)
+
+    def _update(self, request, partial):
+        serializer = UserProfileSerializer(request.user, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {
+                'detail': 'Profile updated successfully.',
+                'profile': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ChangePasswordAPIView(APIView):
+    """Authenticated user: change own password after verifying the current one."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = ChangePasswordSerializer(data=request.data, context={'user': request.user})
+        serializer.is_valid(raise_exception=True)
+
+        request.user.set_password(serializer.validated_data['new_password'])
+        request.user.save(update_fields=['password'])
+        return Response({'detail': 'Password changed successfully.'}, status=status.HTTP_200_OK)

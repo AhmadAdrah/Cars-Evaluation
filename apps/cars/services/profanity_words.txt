@@ -1,0 +1,21 @@
+# One word or phrase per line. Lines starting with # are comments.
+# English
+fuck
+shit
+bitch
+asshole
+bastard
+damn
+dick
+piss
+cunt
+# Arabic (romanized + script)
+sharmut
+kos
+zina
+كلب
+حمار
+قحبة
+شرموط
+زبالة
+خرا

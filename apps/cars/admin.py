@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Car, CarImage
+from .models import BannerImage, Car, CarImage
 
 
 class CarImageInline(admin.TabularInline):
@@ -22,6 +22,14 @@ class CarAdmin(admin.ModelAdmin):
 
 @admin.register(CarImage)
 class CarImageAdmin(admin.ModelAdmin):
-    list_display = ['car', 'image', 'is_primary', 'uploaded_at']
+    list_display = ['car', 'content_type', 'is_primary', 'uploaded_at']
     list_filter = ['is_primary']
     search_fields = ['car__brand', 'car__base_model']
+
+
+@admin.register(BannerImage)
+class BannerImageAdmin(admin.ModelAdmin):
+    list_display = ['id', 'is_active', 'sort_order', 'created_at']
+    list_filter = ['is_active']
+    list_editable = ['is_active', 'sort_order']
+    readonly_fields = ['image_data', 'content_type', 'created_at']

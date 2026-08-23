@@ -1,35 +1,40 @@
+from django.urls import reverse
 from rest_framework import serializers
 
 from apps.accounts.models import User
-from apps.cars.models import Car, CarImage
+from apps.cars.models import BannerImage, Car, CarImage, FavoriteCar
 
 
 class CarImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
     class Meta:
         model = CarImage
         fields = ['id', 'image', 'is_primary', 'uploaded_at']
 
+    def get_image(self, obj) -> str | None:
+        if not obj.image_data:
+            return None
+        return reverse('cars-image', kwargs={'pk': obj.pk})
 
-class CarImageCreateSerializer(serializers.ModelSerializer):
-    images = serializers.ListField(
-        child=serializers.ImageField(),
-        write_only=True,
-        required=True,
-    )
+
+class BannerImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
 
     class Meta:
-        model = CarImage
-        fields = ['is_primary', 'images']
+        model = BannerImage
+        fields = ['id', 'image', 'is_active', 'sort_order', 'created_at']
 
-    def validate_images(self, value):
-        if not value:
-            raise serializers.ValidationError('At least one image is required.')
-        return value
+    def get_image(self, obj) -> str | None:
+        if not obj.image_data:
+            return None
+        return reverse('cars-banner-image', kwargs={'pk': obj.pk})
 
 
 class CarSerializer(serializers.ModelSerializer):
     images = CarImageSerializer(many=True, read_only=True)
     seller_email = serializers.EmailField(source='seller.email', read_only=True)
+    is_favorited = serializers.SerializerMethodField()
 
     class Meta:
         model = Car
@@ -51,6 +56,8 @@ class CarSerializer(serializers.ModelSerializer):
             'price_usd',
             'estimated_price_usd',
             'status',
+            'rejection_reason',
+            'is_favorited',
             'images',
             'created_at',
             'updated_at',
@@ -60,10 +67,22 @@ class CarSerializer(serializers.ModelSerializer):
             'seller',
             'estimated_price_usd',
             'status',
+            'rejection_reason',
+            'is_favorited',
             'images',
             'created_at',
             'updated_at',
         ]
+
+    def get_is_favorited(self, obj) -> bool:
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return False
+        annotated = getattr(obj, 'is_favorited_annotated', None)
+        if annotated is not None:
+            return bool(annotated)
+        return FavoriteCar.objects.filter(user=user, car=obj).exists()
 
 
 class CarCreateSerializer(serializers.ModelSerializer):

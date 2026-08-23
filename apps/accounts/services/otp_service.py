@@ -8,10 +8,12 @@ from django.utils import timezone
 
 from ..models import OTP
 from ..selectors.user_selector import get_active_otp
+from .otp_throttle_service import OTPThrottled, check_send_allowed, check_verify_allowed
 
 
 @transaction.atomic
 def generate_and_send_email_otp(*, email: str, purpose: str) -> OTP:
+    check_send_allowed(email)
     code = f'{random.randint(100000, 999999)}'
     otp = OTP.objects.create(
         email=email,
@@ -30,8 +32,7 @@ def generate_and_send_email_otp(*, email: str, purpose: str) -> OTP:
     return otp
 
 
-@transaction.atomic
-def check_otp_code(*, email: str, code: str, purpose: str) -> OTP:
+def _validate_active_otp(*, email: str, code: str, purpose: str) -> OTP:
     otp = get_active_otp(email=email, purpose=purpose)
     if otp is None:
         raise ValueError('No active OTP found.')
@@ -43,8 +44,15 @@ def check_otp_code(*, email: str, code: str, purpose: str) -> OTP:
 
 
 @transaction.atomic
+def check_otp_code(*, email: str, code: str, purpose: str) -> OTP:
+    check_verify_allowed(email)
+    return _validate_active_otp(email=email, code=code, purpose=purpose)
+
+
+@transaction.atomic
 def verify_otp_code(*, email: str, code: str, purpose: str) -> OTP:
-    otp = check_otp_code(email=email, code=code, purpose=purpose)
+    check_verify_allowed(email)
+    otp = _validate_active_otp(email=email, code=code, purpose=purpose)
 
     otp.is_used = True
     otp.save(update_fields=['is_used'])

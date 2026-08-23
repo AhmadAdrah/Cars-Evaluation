@@ -109,7 +109,7 @@ def predict_price_range(
     margin_percent: Optional[float] = None,
 ) -> Dict[str, float]:
     if margin_percent is None:
-        margin_percent = 5.0
+        margin_percent = 15.0
 
     margin = margin_percent / 100.0
     spread = predicted_price * margin

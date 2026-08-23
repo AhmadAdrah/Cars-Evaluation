@@ -46,6 +46,12 @@ class Car(models.Model):
         help_text='Predicted price computed by the evaluation model',
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    rejection_reason = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text='Reason entered by an admin when rejecting this listing',
+    )
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -58,7 +64,8 @@ class Car(models.Model):
 
 class CarImage(models.Model):
     car = models.ForeignKey(Car, on_delete=models.CASCADE, related_name='images')
-    image = models.ImageField(upload_to='cars/%Y/%m/%d/')
+    image_data = models.BinaryField()
+    content_type = models.CharField(max_length=100, default='image/jpeg')
     is_primary = models.BooleanField(default=False)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
@@ -66,4 +73,35 @@ class CarImage(models.Model):
         ordering = ['-is_primary', 'uploaded_at']
 
     def __str__(self) -> str:
-        return f'{self.car} - {self.image.name}'
+        return f'{self.car} - image {self.pk}'
+
+
+class BannerImage(models.Model):
+    image_data = models.BinaryField()
+    content_type = models.CharField(max_length=100, default='image/jpeg')
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['sort_order', '-created_at']
+
+    def __str__(self) -> str:
+        return f'Banner {self.pk}'
+
+
+class FavoriteCar(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='favorite_cars',
+    )
+    car = models.ForeignKey(Car, on_delete=models.CASCADE, related_name='favorited_by')
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = [('user', 'car')]
+
+    def __str__(self) -> str:
+        return f'{self.user} → {self.car}'

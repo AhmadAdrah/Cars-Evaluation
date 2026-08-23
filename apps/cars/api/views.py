@@ -1,16 +1,33 @@
-from django.db.models import Avg, Count, Max, Min
+from django.db import transaction
+from django.db.models import Avg, Count, Exists, Max, Min, OuterRef
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
-from apps.cars.models import Car, CarImage
+from apps.cars.models import BannerImage, Car, CarImage, FavoriteCar
+from apps.cars.services.car_image_service import (
+    ImageValidationError,
+    attach_car_images,
+    compress_image,
+    validate_uploaded_images,
+)
 from apps.cars.services.metadata_service import get_all_brands, get_base_models_for_brand
+from apps.cars.services.pagination_service import paginate_queryset
 from apps.cars.services.price_prediction_service import predict_price_from_request
 from apps.cars.services.recommendation_service import recommend_similar_cars
+from apps.cars.services.text_sanitization_service import sanitize_description
 
-from .serializers import CarCreateSerializer, CarImageCreateSerializer, CarImageSerializer, CarSerializer, CarUpdateSerializer, AdminUserSerializer
+from .serializers import (
+    AdminUserSerializer,
+    BannerImageSerializer,
+    CarCreateSerializer,
+    CarImageSerializer,
+    CarSerializer,
+    CarUpdateSerializer,
+)
 
 
 class PredictCarPriceAPIView(APIView):
@@ -46,6 +63,11 @@ class SellerAddCarAPIView(APIView):
 
         serializer = CarCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        try:
+            image_files = validate_uploaded_images(request.FILES.getlist('images'))
+        except ImageValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         car_data = serializer.validated_data
         prediction_payload = {
@@ -84,14 +106,15 @@ class SellerAddCarAPIView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        car = serializer.save(
-            seller=request.user,
-            estimated_price_usd=prediction['predicted_price_usd'],
-            status=Car.Status.PENDING,
-        )
-
-        for image in request.FILES.getlist('images'):
-            CarImage.objects.create(car=car, image=image)
+        sanitized = sanitize_description(car_data.get('description', ''))
+        with transaction.atomic():
+            car = serializer.save(
+                seller=request.user,
+                estimated_price_usd=prediction['predicted_price_usd'],
+                description=sanitized['text'],
+                status=Car.Status.PENDING,
+            )
+            attach_car_images(car, image_files)
 
         return Response(
             {
@@ -117,12 +140,15 @@ class AdminApproveCarAPIView(APIView):
             )
 
         car.status = Car.Status.AVAILABLE
-        car.save(update_fields=['status', 'updated_at'])
+        car.rejection_reason = None
+        car.save(update_fields=['status', 'rejection_reason', 'updated_at'])
         return Response({'detail': 'Car approved and published.', 'car': CarSerializer(car).data})
 
 
 class AdminRejectCarAPIView(APIView):
-    """Admin rejects a pending car listing."""
+    """Admin rejects a pending car listing, optionally with a reason for the seller."""
+
+    MAX_REASON_LENGTH = 500
 
     permission_classes = [permissions.IsAdminUser]
 
@@ -135,8 +161,12 @@ class AdminRejectCarAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        reason = (request.data or {}).get('reason', '')
+        reason = sanitize_description(str(reason))['text'][: self.MAX_REASON_LENGTH]
+
         car.status = Car.Status.REJECTED
-        car.save(update_fields=['status', 'updated_at'])
+        car.rejection_reason = reason or None
+        car.save(update_fields=['status', 'rejection_reason', 'updated_at'])
         return Response({'detail': 'Car rejected.', 'car': CarSerializer(car).data})
 
 
@@ -176,11 +206,8 @@ class AdminPendingCarsAPIView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request, *args, **kwargs):
-        cars = Car.objects.filter(status=Car.Status.PENDING).select_related('seller').order_by('created_at')
-        return Response(
-            {'count': cars.count(), 'cars': CarSerializer(cars, many=True).data},
-            status=status.HTTP_200_OK,
-        )
+        cars = Car.objects.filter(status=Car.Status.PENDING).select_related('seller').prefetch_related('images').order_by('created_at')
+        return Response(paginate_queryset(request, cars, CarSerializer), status=status.HTTP_200_OK)
 
 
 class AdminAllCarsAPIView(APIView):
@@ -203,7 +230,7 @@ class AdminAllCarsAPIView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request, *args, **kwargs):
-        cars = Car.objects.select_related('seller').all()
+        cars = Car.objects.select_related('seller').prefetch_related('images').all()
 
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -226,10 +253,7 @@ class AdminAllCarsAPIView(APIView):
         if order_by and order_by.lstrip('-') in self.ORDERABLE:
             cars = cars.order_by(order_by)
 
-        return Response(
-            {'count': cars.count(), 'cars': CarSerializer(cars, many=True).data},
-            status=status.HTTP_200_OK,
-        )
+        return Response(paginate_queryset(request, cars, CarSerializer), status=status.HTTP_200_OK)
 
     @staticmethod
     def _safe_decimal(value):
@@ -335,10 +359,7 @@ class AdminUserListAPIView(APIView):
         if active is not None:
             users = users.filter(is_active=active.lower() in ('1', 'true', 'yes'))
 
-        return Response(
-            {'count': users.count(), 'users': AdminUserSerializer(users, many=True).data},
-            status=status.HTTP_200_OK,
-        )
+        return Response(paginate_queryset(request, users, AdminUserSerializer), status=status.HTTP_200_OK)
 
 
 class AdminUserCarsAPIView(APIView):
@@ -348,20 +369,15 @@ class AdminUserCarsAPIView(APIView):
 
     def get(self, request, user_id, *args, **kwargs):
         user = get_object_or_404(User, pk=user_id)
-        cars = Car.objects.filter(seller=user).select_related('seller')
+        cars = Car.objects.filter(seller=user).select_related('seller').prefetch_related('images')
 
         status_filter = request.query_params.get('status')
         if status_filter:
             cars = cars.filter(status=status_filter)
 
-        return Response(
-            {
-                'user': AdminUserSerializer(user).data,
-                'count': cars.count(),
-                'cars': CarSerializer(cars, many=True).data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        page_data = paginate_queryset(request, cars, CarSerializer)
+        page_data['user'] = AdminUserSerializer(user).data
+        return Response(page_data, status=status.HTTP_200_OK)
 
 
 class CarListAPIView(APIView):
@@ -382,8 +398,21 @@ class CarListAPIView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    @classmethod
+    def _favorite_annotation(cls, request):
+        user = getattr(request, 'user', None)
+        if user is not None and getattr(user, 'is_authenticated', False):
+            return Exists(
+                FavoriteCar.objects.filter(user=user, car=OuterRef('pk')),
+            )
+        return None
+
     def get(self, request, *args, **kwargs):
-        cars = Car.objects.filter(status=Car.Status.AVAILABLE).select_related('seller')
+        cars = Car.objects.filter(status=Car.Status.AVAILABLE).select_related('seller').prefetch_related('images')
+
+        favorite_flag = self._favorite_annotation(request)
+        if favorite_flag is not None:
+            cars = cars.annotate(is_favorited_annotated=favorite_flag)
 
         for field, lookup in self.FILTERABLE.items():
             value = request.query_params.get(field)
@@ -404,7 +433,7 @@ class CarListAPIView(APIView):
         }:
             cars = cars.order_by(order_by)
 
-        return Response(CarSerializer(cars, many=True).data)
+        return Response(paginate_queryset(request, cars, CarSerializer), status=status.HTTP_200_OK)
 
     @staticmethod
     def _safe_decimal(value):
@@ -424,6 +453,10 @@ class BuyerCarDetailAPIView(APIView):
     def get(self, request, pk, *args, **kwargs):
         car = get_object_or_404(Car, pk=pk, status=Car.Status.AVAILABLE)
 
+        favorite_flag = CarListAPIView._favorite_annotation(request)
+        if favorite_flag is not None:
+            car = Car.objects.filter(pk=car.pk).annotate(is_favorited_annotated=favorite_flag).first()
+
         limit = int(request.query_params.get('limit', 6))
         if limit < 1:
             limit = 1
@@ -431,14 +464,64 @@ class BuyerCarDetailAPIView(APIView):
             limit = 20
 
         similar_cars = recommend_similar_cars(car, limit=limit)
+        context = {'request': request}
 
         return Response(
             {
-                'car': CarSerializer(car).data,
-                'similar_cars': CarSerializer(similar_cars, many=True).data,
+                'car': CarSerializer(car, context=context).data,
+                'similar_cars': CarSerializer(similar_cars, many=True, context=context).data,
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ToggleFavoriteAPIView(APIView):
+    """Authenticated user: add/remove a car from favorites (toggle)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        car = get_object_or_404(Car, pk=pk, status=Car.Status.AVAILABLE)
+
+        favorite, created = FavoriteCar.objects.get_or_create(user=request.user, car=car)
+        if not created:
+            favorite.delete()
+            return Response(
+                {
+                    'detail': 'Removed from favorites.',
+                    'is_favorited': False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
+                'detail': 'Added to favorites.',
+                'is_favorited': True,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class FavoriteCarsListAPIView(APIView):
+    """Authenticated user: list the user's favorite available cars."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        cars = (
+            Car.objects.filter(
+                status=Car.Status.AVAILABLE,
+                favorited_by__user=request.user,
+            )
+            .select_related('seller')
+            .prefetch_related('images')
+            .annotate(is_favorited_annotated=Exists(
+                FavoriteCar.objects.filter(user=request.user, car=OuterRef('pk')),
+            ))
+            .order_by('-favorited_by__created_at')
+        )
+        return Response(paginate_queryset(request, cars, CarSerializer), status=status.HTTP_200_OK)
 
 
 class SellerCarsAPIView(APIView):
@@ -447,11 +530,11 @@ class SellerCarsAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        cars = Car.objects.filter(seller=request.user)
+        cars = Car.objects.filter(seller=request.user).select_related('seller').prefetch_related('images')
         status_filter = request.query_params.get('status')
         if status_filter:
             cars = cars.filter(status=status_filter)
-        return Response(CarSerializer(cars, many=True).data)
+        return Response(paginate_queryset(request, cars, CarSerializer))
 
 
 class SellerCarDetailAPIView(APIView):
@@ -460,7 +543,7 @@ class SellerCarDetailAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk, *args, **kwargs):
-        car = get_object_or_404(Car, pk=pk, seller=request.user)
+        car = get_object_or_404(Car.objects.prefetch_related('images'), pk=pk, seller=request.user)
         return Response(CarSerializer(car).data)
 
     def patch(self, request, pk, *args, **kwargs):
@@ -474,7 +557,12 @@ class SellerCarDetailAPIView(APIView):
 
         serializer = CarUpdateSerializer(car, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
-        updated = serializer.validated_data
+        updated = dict(serializer.validated_data)
+
+        try:
+            image_files = validate_uploaded_images(request.FILES.getlist('images'))
+        except ImageValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         prediction_payload = {
             'brand': updated.get('brand', car.brand),
@@ -514,10 +602,15 @@ class SellerCarDetailAPIView(APIView):
 
         updated['estimated_price_usd'] = prediction['predicted_price_usd']
 
+        if 'description' in updated:
+            updated['description'] = sanitize_description(updated['description'])['text']
+
         if updated:
             updated['status'] = Car.Status.PENDING
 
-        car = serializer.save(**updated)
+        with transaction.atomic():
+            car = serializer.save(**updated)
+            attach_car_images(car, image_files)
 
         return Response(
             {
@@ -547,9 +640,6 @@ class AddCarImagesAPIView(APIView):
     def post(self, request, pk, *args, **kwargs):
         car = get_object_or_404(Car, pk=pk, seller=request.user)
 
-        serializer = CarImageCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
         files = request.FILES.getlist('images')
         if not files:
             return Response(
@@ -557,14 +647,12 @@ class AddCarImagesAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        images = []
-        for image in files:
-            created = CarImage.objects.create(
-                car=car,
-                image=image,
-                is_primary=bool(serializer.validated_data.get('is_primary')) and not images,
-            )
-            images.append(created)
+        try:
+            files = validate_uploaded_images(files)
+        except ImageValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        images = attach_car_images(car, files)
 
         return Response(
             {
@@ -573,6 +661,71 @@ class AddCarImagesAPIView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class CarImageAPIView(APIView):
+    """Serve an image stored in the database as its original binary bytes."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk, *args, **kwargs):
+        image = get_object_or_404(CarImage, pk=pk)
+        if not image.image_data:
+            return Response({'detail': 'Image data is empty.'}, status=status.HTTP_404_NOT_FOUND)
+        return HttpResponse(image.image_data, content_type=image.content_type)
+
+
+class BannerListAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        banners = BannerImage.objects.filter(is_active=True)
+        return Response(BannerImageSerializer(banners, many=True).data, status=status.HTTP_200_OK)
+
+
+class BannerImageAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk, *args, **kwargs):
+        banner = get_object_or_404(BannerImage, pk=pk, is_active=True)
+        if not banner.image_data:
+            return Response({'detail': 'Image data is empty.'}, status=status.HTTP_404_NOT_FOUND)
+        return HttpResponse(banner.image_data, content_type=banner.content_type)
+
+
+class AdminBannerListAPIView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, *args, **kwargs):
+        banners = BannerImage.objects.all()
+        return Response(BannerImageSerializer(banners, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        image_file = request.FILES.get('image')
+        if image_file is None:
+            return Response({'detail': 'An image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            validate_uploaded_images([image_file])
+            image_data, content_type = compress_image(image_file)
+        except ImageValidationError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        banner = BannerImage.objects.create(
+            image_data=image_data,
+            content_type=content_type,
+            sort_order=BannerImage.objects.count(),
+        )
+        return Response(BannerImageSerializer(banner).data, status=status.HTTP_201_CREATED)
+
+
+class AdminBannerDetailAPIView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def delete(self, request, pk, *args, **kwargs):
+        banner = get_object_or_404(BannerImage, pk=pk)
+        banner.delete()
+        return Response({'detail': 'Banner deleted.'}, status=status.HTTP_200_OK)
 
 
 class BrandListAPIView(APIView):

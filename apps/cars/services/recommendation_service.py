@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import List, Sequence
 
 import numpy as np
+from django.core.cache import cache
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from apps.cars.models import Car
 
 DEFAULT_LIMIT = 6
+CACHE_TTL_SECONDS = 600
 
 
 def _feature_text(car: Car) -> str:
@@ -36,7 +38,20 @@ def _feature_text(car: Car) -> str:
 
 
 def recommend_similar_cars(car: Car, limit: int = DEFAULT_LIMIT) -> List[Car]:
-    """Content-based recommendation: returns the most similar AVAILABLE cars."""
+    """Content-based recommendation: returns the most similar AVAILABLE cars.
+
+    Results are cached per (car, limit) since listings change rarely; TTL keeps
+    them fresh enough for the marketplace.
+    """
+    cache_key = f'similar_cars:{car.pk}:{limit}'
+    cached_ids = cache.get(cache_key)
+    if cached_ids is not None:
+        cars = Car.objects.filter(pk__in=cached_ids, status=Car.Status.AVAILABLE)
+        by_id = {c.pk: c for c in cars}
+        ordered = [by_id[pk] for pk in cached_ids if pk in by_id]
+        if len(ordered) == len(cached_ids):
+            return ordered
+
     candidates = (
         Car.objects.filter(status=Car.Status.AVAILABLE)
         .exclude(pk=car.pk)
@@ -61,4 +76,6 @@ def recommend_similar_cars(car: Car, limit: int = DEFAULT_LIMIT) -> List[Car]:
     result = []
     for idx in order[:top_limit]:
         result.append(candidates[idx])
+
+    cache.set(cache_key, [c.pk for c in result], CACHE_TTL_SECONDS)
     return result
