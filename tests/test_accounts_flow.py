@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase
@@ -101,6 +103,19 @@ class AccountsApiFlowTests(APITestCase):
             'email': 'plain@example.com', 'password': 'StrongPass123!',
         })
         self.assertEqual(response.status_code, 403)
+
+    def test_admin_login_succeeds_despite_stale_bearer_in_header(self):
+        admin = User.objects.create_superuser(email='boss@example.com', password='Admin123!')
+        access = RefreshToken.for_user(admin).access_token
+        access.set_exp(lifetime=timedelta(seconds=-1))
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+
+        response = self.client.post(ADMIN_LOGIN_URL, {
+            'email': 'boss@example.com', 'password': 'Admin123!',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('tokens', response.data)
 
     def test_password_reset_flow(self):
         User.objects.create_superuser(email='resetme@example.com', password='OldPass123!')

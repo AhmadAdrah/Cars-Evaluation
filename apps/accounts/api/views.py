@@ -26,6 +26,8 @@ from .serializers import (
 
 
 class RegisterAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = UserRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -36,6 +38,8 @@ class RegisterAPIView(APIView):
 
 
 class VerifyOTPAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = EmailVerifyOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -53,6 +57,8 @@ class VerifyOTPAPIView(APIView):
 
 
 class LoginAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -70,6 +76,8 @@ class LoginAPIView(APIView):
 
 
 class AdminLoginAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -87,6 +95,8 @@ class AdminLoginAPIView(APIView):
 
 
 class ClientLoginAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -104,6 +114,8 @@ class ClientLoginAPIView(APIView):
 
 
 class ForgotPasswordAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = ForgotPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -113,6 +125,8 @@ class ForgotPasswordAPIView(APIView):
 
 
 class VerifyPasswordResetOTPAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = VerifyPasswordOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -126,6 +140,8 @@ class VerifyPasswordResetOTPAPIView(APIView):
 
 
 class ResetPasswordAPIView(APIView):
+    authentication_classes = []
+
     def post(self, request, *args, **kwargs):
         serializer = ResetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
